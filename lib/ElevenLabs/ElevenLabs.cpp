@@ -27,7 +27,9 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
 
     String jsonPayload = "{"
         "\"text\":\"" + text + "\","
-        "\"model_id\":\"eleven_multilingual_v2\""
+        "\"model_id\":\"eleven_multilingual_v2\","
+        "\"language_code\":\"pl\","
+        "\"speed\":1.85"
         "}";
 
     LOG_DEBUG("JsonPayload=" << jsonPayload);
