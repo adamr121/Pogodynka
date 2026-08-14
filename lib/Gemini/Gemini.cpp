@@ -8,7 +8,7 @@ Gemini::Gemini(const char *model, const char *apiKey) : model(model), apiKey(api
 {
 }
 
-String Gemini::askLLM(const String &prompt)
+String Gemini::askLLM(const String &prompt, String &errDesc)
 {
     LOG_INFO("Gemini::askLLM()");
     WiFiClientSecure client;
@@ -52,17 +52,17 @@ String Gemini::askLLM(const String &prompt)
             }
             else
             {
-                result = "Błąd: Nie znaleziono pola z tekstem w odpowiedzi.";
+                errDesc = "Błąd: Nie znaleziono pola z tekstem w odpowiedzi.";
             }
         }
         else
         {
-            result = "Błąd deserializacji JSON: " + String(error.c_str());
+            errDesc = "Błąd deserializacji JSON: " + String(error.c_str());
         }
     }
     else
     {
-        result = "Błąd HTTP: " + String(httpResponseCode);
+        errDesc = "Błąd HTTP: " + String(httpResponseCode);
     }
     LOG_DEBUG("Odpowiedz GEMINI: " << result);
     https.end();

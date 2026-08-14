@@ -10,11 +10,13 @@ struct AudioBuffer {
 class ElevenLabs
 {
 public:
-    ElevenLabs(String apiKey, String voiceId);
+    ElevenLabs(String apiKey, String voiceId, String modelId, String outputFormat = "mp3_22050_32");
     AudioBuffer getSpeechAudio(String text);
 private:
     String apiKey;
     String voiceId;
+    String modelId;
+    String outputFormat;
 };
 
 #endif // __ELEVENLABS_H__

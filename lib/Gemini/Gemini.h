@@ -6,7 +6,7 @@
 class Gemini{
     public:
     Gemini(const char * model, const char* apiKey);
-    String askLLM(const String& prompt);
+    String askLLM(const String& promp, String &errDesc);
 
     private:
     String model;

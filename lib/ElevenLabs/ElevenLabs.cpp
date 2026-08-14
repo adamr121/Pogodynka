@@ -4,6 +4,11 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
+ElevenLabs::ElevenLabs(String apiKey, String voiceId, String modelId, String outputFormat): apiKey(apiKey), voiceId(voiceId), modelId(modelId), outputFormat(outputFormat)
+{
+    
+}
+
 AudioBuffer ElevenLabs::getSpeechAudio(String text)
 {
     LOG_INFO("ElevenLabs::getSpeechAudio");
@@ -17,8 +22,7 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
     client.setInsecure();
 
     HTTPClient http;
-
-    String url = "https://api.elevenlabs.io/v1/text-to-speech/" + voiceId + "?output_format=mp3_22050_32";
+    String url = "https://api.elevenlabs.io/v1/text-to-speech/" + voiceId + "?output_format=" + outputFormat;
 
     http.begin(client, url);
     http.setTimeout(10000);
@@ -27,7 +31,7 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
 
     String jsonPayload = "{"
         "\"text\":\"" + text + "\","
-        "\"model_id\":\"eleven_multilingual_v2\","
+        "\"model_id\":\"" + modelId + "\","
         "\"language_code\":\"pl\","
         "\"speed\":1.85"
         "}";
@@ -40,7 +44,7 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
         int contentLength = http.getSize();
 
         if(contentLength < 0) {
-            LOG_ERROR("constentLenght < 0");
+            LOG_ERROR("contentLenght < 0");
             http.end();
             return result;
         }
@@ -79,9 +83,4 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
     
     http.end();
     return result;
-}
-
-ElevenLabs::ElevenLabs(String apiKey, String voiceId): apiKey(apiKey), voiceId(voiceId) 
-{
-    
 }
