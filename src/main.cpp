@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_sleep.h>
 #include <config.h>
 #include <pinout.h>
 #include "logger.h"
@@ -10,6 +11,7 @@
 #include <AudioOutputI2S.h>
 #include <AudioGeneratorMP3.h>
 #include <Adafruit_NeoPixel.h>
+#include <EasyButton.h>
 
 Gemini llm(model, geminiApiKey);
 OpenMeteo openMeteo;
@@ -21,6 +23,7 @@ String weatherDesc;
 AudioBuffer audio;
 
 Adafruit_NeoPixel led(1, Pins::LED, NEO_GRB + NEO_KHZ800);
+EasyButton btn (Pins::Button);
 
 enum class State{
     INIT,
@@ -32,14 +35,43 @@ enum class State{
     ERROR
 };
 
-State currentState = State::INIT;
+State currentState;
+
+// --- Deep sleep ---
+unsigned long terminalStateSince = 0; // millis() w momencie wejścia w DONE/ERROR
+bool terminalStateActive = false;     // czy obecnie przebywamy w DONE/ERROR
+
+void goToDeepSleep()
+{
+    LOG_INFO("Wchodzę w deep sleep (bezczynność w DONE/ERROR)");
+    led.setPixelColor(0,0,0,0);
+    led.show();
+
+    // Wyłącz wzmacniacz audio (MAX98357A) – SD w stan niski = shutdown
+    pinMode(Pins::SD_MODE, OUTPUT);
+    digitalWrite(Pins::SD_MODE, LOW);
+
+    // Wyłącz WiFi, żeby oszczędzać energię w sleep
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+
+    // Budzenie przyciskiem – stan niski po wciśnięciu
+#ifdef ESP_C3_MINI
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << Pins::Button, ESP_GPIO_WAKEUP_GPIO_LOW);
+#else
+    esp_sleep_enable_ext0_wakeup((gpio_num_t) Pins::Button, LOW);
+#endif
+    // Deep sleep resetuje układ – po obudzeniu setup() wykona się od nowa
+    esp_deep_sleep_start();
+}
 
 void updateLed(State state)
 {
     switch (state)
     {
     case State::INIT:
-        led.setPixelColor(0, 0, 0, 0);
+        led.setPixelColor(0, 255, 50, 0); 
         break;
     case State::WEATHER:
         led.setPixelColor(0, 0, 255, 0);
@@ -63,6 +95,51 @@ void updateLed(State state)
     led.show();
 }
 
+const char* stateToString(State state)
+{
+    switch (state)
+    {
+    case State::INIT:        return "INIT";
+    case State::WEATHER:     return "WEATHER";
+    case State::LLM:         return "LLM";
+    case State::FETCH_AUDIO: return "FETCH_AUDIO";
+    case State::PLAY_AUDIO:  return "PLAY_AUDIO";
+    case State::DONE:        return "DONE";
+    case State::ERROR:       return "ERROR";
+    }
+    return "UNKNOWN";
+}
+
+void setState(State newState)
+{
+    if (currentState != newState)
+    {
+        LOG_DEBUG("Zmiana stanu: " << stateToString(currentState) << " -> " << stateToString(newState));
+        currentState = newState;
+        updateLed(currentState); // natychmiast ustaw kolor dla nowego stanu
+    }
+}
+
+void btnOnPressed(){
+    switch (currentState)
+    {
+    case State::INIT:
+        setState(State::WEATHER);
+        break;
+    case State::DONE:
+        setState(State::PLAY_AUDIO);
+        break;
+    case State::ERROR:
+        setState(State::INIT);
+        break;
+    }
+}
+void onWiFi(arduino_event_id_t event, arduino_event_info_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        LOG_WARN("Rozlaczenie, reason=" << (int)info.wifi_sta_disconnected.reason
+                 << " (" << WiFi.disconnectReasonName((wifi_err_reason_t)info.wifi_sta_disconnected.reason) << "), RSSI = " << WiFi.RSSI());
+    }
+}
 void setup()
 {
     Serial.begin(115200);
@@ -75,6 +152,12 @@ void setup()
     led.begin();
     led.setBrightness(20);
 
+    btn.begin();
+    btn.onPressed(btnOnPressed);
+
+    setState(State::INIT);
+    updateLed(currentState);
+
     int cnt = 0;
     while (WiFi.status() != WL_CONNECTED && cnt < 10)
     {
@@ -82,24 +165,28 @@ void setup()
         delay(500);
         cnt++;
     }
-    LOG_INFO("WiFi connected");
+    LOG_INFO("Nawiazano polaczenie z WIFI " << WiFi.localIP());
+    WiFi.onEvent(onWiFi);
+    LOG_INFO("WiFI RSSI = " << WiFi.RSSI() << ", MAC = " << WiFi.macAddress());
 }
+
 
 void loop()
 {
+    btn.read();
+
     switch (currentState)
     {
     case State::INIT:
-        currentState = State::WEATHER;
         break;
     case State::WEATHER:
         weatherData = openMeteo.getTodayWeatherData();
         if(weatherData.isEmpty()){
             LOG_ERROR("No weather data received!");
-            currentState=State::ERROR;
+            setState(State::ERROR);
             break;
         }
-        currentState = State::LLM;
+        setState(State::LLM);
         break;
     case State::LLM:
     {
@@ -108,10 +195,10 @@ void loop()
         LOG_DEBUG(weatherDesc);
         if(errDesc != ""){
             LOG_ERROR(errDesc);
-            currentState = State::ERROR;
+            setState(State::ERROR);
             break;
         }
-        currentState=State::FETCH_AUDIO;
+        setState(State::FETCH_AUDIO);
     }
         break;
     case State::FETCH_AUDIO:
@@ -122,11 +209,11 @@ void loop()
         audio = elevenLabs.getSpeechAudio(weatherDesc);
 
         if(audio.data != nullptr && audio.size > 0){
-            currentState = State::PLAY_AUDIO;
+            setState(State::PLAY_AUDIO);
         }
         else{
             LOG_ERROR("Nie udało sie wygenerowac dzwieku");
-            currentState = State::ERROR;
+            setState(State::ERROR);
             break;
         }
         break;
@@ -144,7 +231,7 @@ void loop()
         audioOutI2S.flush();
         mp3Conventer.stop();
 
-        currentState = State::DONE;
+        setState(State::DONE);
         break;
     }
     case State::DONE:
@@ -154,5 +241,22 @@ void loop()
         break;
     }
 
-    updateLed(currentState);
+    // Deep sleep: jeśli system jest w stanie DONE lub ERROR przez DEEP_SLEEP_TIMEOUT_MS
+    if (currentState == State::DONE || currentState == State::ERROR)
+    {
+        if (!terminalStateActive)
+        {
+            terminalStateActive = true;
+            terminalStateSince = millis();
+        }
+        else if (millis() - terminalStateSince >= DEEP_SLEEP_TIMEOUT_MS)
+        {
+            goToDeepSleep();
+        }
+    }
+    else
+    {
+        // Opuściliśmy stan końcowy – reset licznika bezczynności
+        terminalStateActive = false;
+    }
 }
