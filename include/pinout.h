@@ -6,12 +6,12 @@
 
 #ifdef ESP_C3_MINI
 namespace Pins{
-    constexpr uint8_t BCLK =  6;
     constexpr uint8_t LRC =  7;
-    constexpr uint8_t DIN =  2;
-    constexpr uint8_t SD_MODE =  8;
+    constexpr uint8_t BCLK =  8;
+    constexpr uint8_t DIN =  9;
+    constexpr uint8_t SD_MODE =  10;
     constexpr uint8_t LED =  3;
-    constexpr uint8_t Button =  4;
+    constexpr uint8_t Button =  4  ;
     constexpr uint8_t Battery =  1;
 }
 #endif

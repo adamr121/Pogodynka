@@ -14,7 +14,7 @@ const char* elevenLabsVoiceId = "JBFqnCBsd6RMkjVDRZzb"; //dziala
 
 // ===== Deep sleep =====
 // Po jakim czasie bezczynności w stanie DONE lub ERROR przejść w deep sleep
-constexpr unsigned long DEEP_SLEEP_TIMEOUT_MS = 1UL * 60UL * 1000UL; // 5 minut
+constexpr unsigned long DEEP_SLEEP_TIMEOUT_MS = 1UL * 60UL * 1000UL; // 1 minut
 
 // GEMINI (model to nie sekret)
 const char* model = "gemini-3.5-flash-lite";

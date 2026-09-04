@@ -12,6 +12,7 @@
 #include <AudioGeneratorMP3.h>
 #include <Adafruit_NeoPixel.h>
 #include <EasyButton.h>
+#include "Timer.h"
 
 Gemini llm(model, geminiApiKey);
 OpenMeteo openMeteo;
@@ -25,6 +26,8 @@ AudioBuffer audio;
 Adafruit_NeoPixel led(1, Pins::LED, NEO_GRB + NEO_KHZ800);
 EasyButton btn (Pins::Button);
 
+Timer wifiTimer(500);
+
 enum class State{
     INIT,
     WEATHER,
@@ -32,7 +35,8 @@ enum class State{
     FETCH_AUDIO,
     PLAY_AUDIO,
     DONE,
-    ERROR
+    ERROR,
+    WiFi_CONNECTION
 };
 
 State currentState;
@@ -91,6 +95,9 @@ void updateLed(State state)
     case State::ERROR:
         led.setPixelColor(0, 255, 0, 0);
         break;
+    case State::WiFi_CONNECTION:
+        led.setPixelColor(0, 255, 125, 1);
+        break;
     }
     led.show();
 }
@@ -106,6 +113,7 @@ const char* stateToString(State state)
     case State::PLAY_AUDIO:  return "PLAY_AUDIO";
     case State::DONE:        return "DONE";
     case State::ERROR:       return "ERROR";
+    case State::WiFi_CONNECTION:       return "WiFi_CONNECTION";
     }
     return "UNKNOWN";
 }
@@ -117,6 +125,14 @@ void setState(State newState)
         LOG_DEBUG("Zmiana stanu: " << stateToString(currentState) << " -> " << stateToString(newState));
         currentState = newState;
         updateLed(currentState); // natychmiast ustaw kolor dla nowego stanu
+
+        switch (currentState)
+        {
+        case State::WiFi_CONNECTION:
+            WiFi.disconnect();
+            WiFi.begin(ssid, password);
+            break;
+        }
     }
 }
 
@@ -130,7 +146,12 @@ void btnOnPressed(){
         setState(State::PLAY_AUDIO);
         break;
     case State::ERROR:
-        setState(State::INIT);
+        if(WiFi.status() == WL_CONNECTED){
+            setState(State::INIT);
+        }
+        else{
+            setState(State::WiFi_CONNECTION);
+        }
         break;
     }
 }
@@ -144,6 +165,7 @@ void setup()
 {
     Serial.begin(115200);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(ssid, password);
 
     audioOutI2S.SetPinout(Pins::BCLK, Pins::LRC, Pins::DIN);
@@ -151,23 +173,13 @@ void setup()
 
     led.begin();
     led.setBrightness(20);
-
+    led.setPixelColor(0, 0, 0, 0); 
+    led.show();
     btn.begin();
     btn.onPressed(btnOnPressed);
-
-    setState(State::INIT);
-    updateLed(currentState);
-
-    int cnt = 0;
-    while (WiFi.status() != WL_CONNECTED && cnt < 10)
-    {
-        LOG_DEBUG(String("Trying to connect to WiFi, try ") << cnt);
-        delay(500);
-        cnt++;
-    }
-    LOG_INFO("Nawiazano polaczenie z WIFI " << WiFi.localIP());
+    
     WiFi.onEvent(onWiFi);
-    LOG_INFO("WiFI RSSI = " << WiFi.RSSI() << ", MAC = " << WiFi.macAddress());
+    setState(State::WiFi_CONNECTION);
 }
 
 
@@ -177,8 +189,35 @@ void loop()
 
     switch (currentState)
     {
-    case State::INIT:
+    case State::WiFi_CONNECTION:
+        static int timeoutTicks = 0;
+        if(wifiTimer.isReady())
+        {
+            if (WiFi.status() != WL_CONNECTED)
+            {
+                timeoutTicks++;
+                LOG_DEBUG(String("Trying to connect to WiFi, try ") << timeoutTicks);
+            }
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                timeoutTicks = 0;
+                LOG_INFO("Nawiazano polaczenie z WIFI " << WiFi.localIP());
+                LOG_DEBUG("WiFI RSSI = " << WiFi.RSSI() << ", MAC = " << WiFi.macAddress());
+                setState(State::INIT);
+            }
+            if (timeoutTicks >= 10)
+            {
+                timeoutTicks = 0;
+                setState(State::ERROR);
+            }
+        }
         break;
+
+    case State::INIT:
+    {
+        setState(State::WEATHER);
+        break;
+    }
     case State::WEATHER:
         weatherData = openMeteo.getTodayWeatherData();
         if(weatherData.isEmpty()){
