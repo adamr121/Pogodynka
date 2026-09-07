@@ -13,6 +13,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <EasyButton.h>
 #include "Timer.h"
+#include "StateMachine.h"
 
 Gemini llm(model, geminiApiKey);
 OpenMeteo openMeteo;
@@ -27,19 +28,7 @@ Adafruit_NeoPixel led(1, Pins::LED, NEO_GRB + NEO_KHZ800);
 EasyButton btn (Pins::Button);
 
 Timer wifiTimer(500);
-
-enum class State{
-    INIT,
-    WEATHER,
-    LLM,
-    FETCH_AUDIO,
-    PLAY_AUDIO,
-    DONE,
-    ERROR,
-    WiFi_CONNECTION
-};
-
-State currentState;
+StateMachine stateMachine;
 
 // --- Deep sleep ---
 unsigned long terminalStateSince = 0; // millis() w momencie wejścia w DONE/ERROR
@@ -102,55 +91,23 @@ void updateLed(State state)
     led.show();
 }
 
-const char* stateToString(State state)
-{
-    switch (state)
-    {
-    case State::INIT:        return "INIT";
-    case State::WEATHER:     return "WEATHER";
-    case State::LLM:         return "LLM";
-    case State::FETCH_AUDIO: return "FETCH_AUDIO";
-    case State::PLAY_AUDIO:  return "PLAY_AUDIO";
-    case State::DONE:        return "DONE";
-    case State::ERROR:       return "ERROR";
-    case State::WiFi_CONNECTION:       return "WiFi_CONNECTION";
-    }
-    return "UNKNOWN";
-}
-
-void setState(State newState)
-{
-    if (currentState != newState)
-    {
-        LOG_DEBUG("Zmiana stanu: " << stateToString(currentState) << " -> " << stateToString(newState));
-        currentState = newState;
-        updateLed(currentState); // natychmiast ustaw kolor dla nowego stanu
-
-        switch (currentState)
-        {
-        case State::WiFi_CONNECTION:
-            WiFi.disconnect();
-            WiFi.begin(ssid, password);
-            break;
-        }
-    }
-}
-
 void btnOnPressed(){
-    switch (currentState)
+    switch (stateMachine.getState())
     {
     case State::INIT:
-        setState(State::WEATHER);
+        stateMachine.setState(State::WEATHER);
         break;
     case State::DONE:
-        setState(State::PLAY_AUDIO);
+        stateMachine.setState(State::PLAY_AUDIO);
         break;
     case State::ERROR:
         if(WiFi.status() == WL_CONNECTED){
-            setState(State::INIT);
+            stateMachine.setState(State::INIT);
         }
         else{
-            setState(State::WiFi_CONNECTION);
+            stateMachine.setState(State::WiFi_CONNECTION);
+            WiFi.disconnect();
+            WiFi.begin(ssid, password);
         }
         break;
     }
@@ -179,15 +136,16 @@ void setup()
     btn.onPressed(btnOnPressed);
     
     WiFi.onEvent(onWiFi);
-    setState(State::WiFi_CONNECTION);
-}
 
+    stateMachine.setChangeStateCallback(updateLed);
+    stateMachine.setState(State::WiFi_CONNECTION);
+}
 
 void loop()
 {
     btn.read();
 
-    switch (currentState)
+    switch (stateMachine.getState())
     {
     case State::WiFi_CONNECTION:
         static int timeoutTicks = 0;
@@ -203,29 +161,29 @@ void loop()
                 timeoutTicks = 0;
                 LOG_INFO("Nawiazano polaczenie z WIFI " << WiFi.localIP());
                 LOG_DEBUG("WiFI RSSI = " << WiFi.RSSI() << ", MAC = " << WiFi.macAddress());
-                setState(State::INIT);
+                stateMachine.setState(State::INIT);
             }
             if (timeoutTicks >= 10)
             {
                 timeoutTicks = 0;
-                setState(State::ERROR);
+                stateMachine.setState(State::ERROR);
             }
         }
         break;
 
     case State::INIT:
     {
-        setState(State::WEATHER);
+        stateMachine.setState(State::WEATHER);
         break;
     }
     case State::WEATHER:
         weatherData = openMeteo.getTodayWeatherData();
         if(weatherData.isEmpty()){
             LOG_ERROR("No weather data received!");
-            setState(State::ERROR);
+            stateMachine.setState(State::ERROR);
             break;
         }
-        setState(State::LLM);
+        stateMachine.setState(State::LLM);
         break;
     case State::LLM:
     {
@@ -234,10 +192,10 @@ void loop()
         LOG_DEBUG(weatherDesc);
         if(errDesc != ""){
             LOG_ERROR(errDesc);
-            setState(State::ERROR);
+            stateMachine.setState(State::ERROR);
             break;
         }
-        setState(State::FETCH_AUDIO);
+        stateMachine.setState(State::FETCH_AUDIO);
     }
         break;
     case State::FETCH_AUDIO:
@@ -248,11 +206,11 @@ void loop()
         audio = elevenLabs.getSpeechAudio(weatherDesc);
 
         if(audio.data != nullptr && audio.size > 0){
-            setState(State::PLAY_AUDIO);
+            stateMachine.setState(State::PLAY_AUDIO);
         }
         else{
             LOG_ERROR("Nie udało sie wygenerowac dzwieku");
-            setState(State::ERROR);
+            stateMachine.setState(State::ERROR);
             break;
         }
         break;
@@ -270,7 +228,7 @@ void loop()
         audioOutI2S.flush();
         mp3Conventer.stop();
 
-        setState(State::DONE);
+        stateMachine.setState(State::DONE);
         break;
     }
     case State::DONE:
@@ -281,7 +239,7 @@ void loop()
     }
 
     // Deep sleep: jeśli system jest w stanie DONE lub ERROR przez DEEP_SLEEP_TIMEOUT_MS
-    if (currentState == State::DONE || currentState == State::ERROR)
+    if (stateMachine.getState() == State::DONE || stateMachine.getState() == State::ERROR)
     {
         if (!terminalStateActive)
         {
