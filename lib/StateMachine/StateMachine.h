@@ -9,7 +9,8 @@ enum class State{
     PLAY_AUDIO,
     DONE,
     ERROR,
-    WiFi_CONNECTION
+    WiFi_CONNECTION,
+    SERVICE
 };
 
 //using StateCallback = void (*)(State);

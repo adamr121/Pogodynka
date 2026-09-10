@@ -7,7 +7,7 @@
 #ifdef ESP_C3_MINI
 namespace Pins{
     constexpr uint8_t LRC =  7;
-    constexpr uint8_t BCLK =  8;
+    constexpr uint8_t BCLK =  6; // GPIO8 nie wypuszcza BCLK (0 V) -> przeniesione na GPIO6
     constexpr uint8_t DIN =  9;
     constexpr uint8_t SD_MODE =  10;
     constexpr uint8_t LED =  3;

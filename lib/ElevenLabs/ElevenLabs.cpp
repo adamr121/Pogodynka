@@ -33,7 +33,12 @@ AudioBuffer ElevenLabs::getSpeechAudio(String text)
         "\"text\":\"" + text + "\","
         "\"model_id\":\"" + modelId + "\","
         "\"language_code\":\"pl\","
-        "\"speed\":1.85"
+        "\"speed\":1.2,"
+        "\"voice_settings\":{"
+            "\"stability\":0.9,"
+            "\"similarity_boost\":0.8,"
+            "\"style\":0.0"
+        "}"
         "}";
 
     LOG_DEBUG("JsonPayload=" << jsonPayload);

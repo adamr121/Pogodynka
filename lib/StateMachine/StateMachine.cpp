@@ -30,6 +30,7 @@ const char* StateMachine::getStateString(State state)
         case State::DONE:        return "DONE";
         case State::ERROR:       return "ERROR";
         case State::WiFi_CONNECTION:       return "WiFi_CONNECTION";
+        case State::SERVICE:     return "SERVICE";
     }
     return "UNKNOWN";
 }

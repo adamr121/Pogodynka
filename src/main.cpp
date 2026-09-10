@@ -14,11 +14,55 @@
 #include <EasyButton.h>
 #include "Timer.h"
 #include "StateMachine.h"
+#include <ArduinoOTA.h>
+
+// --- Pomocnik: liczy całkowitą liczbę próbek audio w buforze MP3 ---
+// Potrzebne, bo dekoder (AudioGeneratorMP3) na ESP32-C3 nie kończy sam odtwarzania.
+static uint32_t mp3TotalSamples(const uint8_t *data, uint32_t size)
+{
+    static const int kbpsV1[16] = {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
+    static const int kbpsV2[16] = {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0};
+    uint32_t total = 0;
+    uint32_t i = 0;
+    while (i + 4 <= size) {
+        if (data[i] != 0xFF) { i++; continue; }
+        uint8_t b1 = data[i+1];
+        if ((b1 & 0xE0) != 0xE0) { i++; continue; }   // sync
+        int version = (b1 >> 3) & 3;                   // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+        int layer   = (b1 >> 1) & 3;                   // 1 = Layer III
+        if (layer != 1) { i++; continue; }
+        uint8_t b2 = data[i+2];
+        int bitrateIdx = (b2 >> 4) & 0xF;
+        int srIdx      = (b2 >> 2) & 3;
+        int padding    = (b2 >> 1) & 1;
+        if (bitrateIdx == 0 || bitrateIdx == 15 || srIdx == 3) { i++; continue; }
+
+        int sr, bitrate, spf;
+        if (version == 3) {
+            sr = (srIdx==0)?44100 : (srIdx==1)?48000 : 32000;
+            bitrate = kbpsV1[bitrateIdx];
+            spf = 1152;
+        } else {
+            sr = (version==2) ? ((srIdx==0)?22050:(srIdx==1)?24000:16000)
+                              : ((srIdx==0)?11025:(srIdx==1)?12000:8000);
+            bitrate = kbpsV2[bitrateIdx];
+            spf = 576;
+        }
+        if (bitrate == 0) { i++; continue; }
+
+        int frameLen = (version==3) ? (144 * bitrate * 1000) / sr + padding
+                                    : (72  * bitrate * 1000) / sr + padding;
+        if (frameLen <= 0) { i++; continue; }
+        total += spf;
+        i += frameLen;
+    }
+    return total;
+}
 
 Gemini llm(model, geminiApiKey);
 OpenMeteo openMeteo;
 ElevenLabs elevenLabs(elevenLabsApiKey, elevenLabsVoiceId, elevenLabsModelId, elevenLabsOutPutFormat);
-AudioOutputI2S audioOutI2S;
+AudioOutputI2S audioOutI2S(0, AudioOutputI2S::EXTERNAL_I2S, 8, AudioOutputI2S::APLL_ENABLE);
 
 String weatherData;
 String weatherDesc;
@@ -41,7 +85,7 @@ void goToDeepSleep()
     led.show();
 
     // Wyłącz wzmacniacz audio (MAX98357A) – SD w stan niski = shutdown
-    pinMode(Pins::SD_MODE, OUTPUT);
+    
     digitalWrite(Pins::SD_MODE, LOW);
 
     // Wyłącz WiFi, żeby oszczędzać energię w sleep
@@ -87,6 +131,9 @@ void updateLed(State state)
     case State::WiFi_CONNECTION:
         led.setPixelColor(0, 255, 125, 1);
         break;
+    case State::SERVICE:
+        led.setPixelColor(0, 0, 125, 255);
+        break;
     }
     led.show();
 }
@@ -118,6 +165,44 @@ void onWiFi(arduino_event_id_t event, arduino_event_info_t info) {
                  << " (" << WiFi.disconnectReasonName((wifi_err_reason_t)info.wifi_sta_disconnected.reason) << "), RSSI = " << WiFi.RSSI());
     }
 }
+
+void debugMode(){
+    LOG_INFO("DebugMode");
+	WiFi.mode(WIFI_STA);
+	WiFi.begin(ssid, password);
+
+	int cnt = 0;
+	while(WiFi.status() != WL_CONNECTED && cnt < 10){
+		delay(500);
+		cnt++;
+	}
+	Serial.begin(115200);
+	Serial.println("\nPołączono z Wi-Fi!");
+	Serial.print("Adres IP: ");
+	Serial.println(WiFi.localIP());
+
+	ArduinoOTA.setHostname("Pogodynka-ESP32"); // Nazwa widoczna w sieci
+	// ArduinoOTA.setPassword("admin123");     // Opcjonalne hasło do wgrywania kodu
+
+	ArduinoOTA.onStart([]() {
+		Serial.println("Rozpoczęto wgrywanie kodu OTA...");
+	});
+	ArduinoOTA.onEnd([]() {
+		Serial.println("\nWgrywanie zakończone pomyślnie!");
+	});
+	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+		Serial.printf("Postęp: %u%%\r", (progress / (total / 100)));
+	});
+	ArduinoOTA.onError([](ota_error_t error) {
+		Serial.printf("Błąd OTA [%u]: ", error);
+	});
+
+	// 3. Start usługi OTA
+	ArduinoOTA.begin();
+
+    stateMachine.setState(State::SERVICE);    
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -128,13 +213,18 @@ void setup()
     audioOutI2S.SetPinout(Pins::BCLK, Pins::LRC, Pins::DIN);
     audioOutI2S.begin();
 
+    pinMode(Pins::SD_MODE, OUTPUT);
+    digitalWrite(Pins::SD_MODE, HIGH);
+
     led.begin();
-    led.setBrightness(20);
+    led.setBrightness(5);
     led.setPixelColor(0, 0, 0, 0); 
     led.show();
     btn.begin();
     btn.onPressed(btnOnPressed);
+    btn.onPressedFor(3000, debugMode);
     
+
     WiFi.onEvent(onWiFi);
 
     stateMachine.setChangeStateCallback(updateLed);
@@ -218,16 +308,19 @@ void loop()
     {
         AudioFileSourceRAM audioMp3(audio.data, audio.size);
         AudioGeneratorMP3 mp3Conventer;
-        mp3Conventer.begin(&audioMp3, &audioOutI2S);
+        if(!mp3Conventer.begin(&audioMp3, &audioOutI2S)){
+            LOG_ERROR("MP3 begin() failed");
+            stateMachine.setState(State::ERROR);
+            break;
+        }
+        LOG_INFO("begin() OK, odtwarzam... size=" << audio.size);
 
-        while(mp3Conventer.isRunning()){
-            mp3Conventer.loop();
+        while(mp3Conventer.loop()){
             yield();
         }
 
         audioOutI2S.flush();
         mp3Conventer.stop();
-
         stateMachine.setState(State::DONE);
         break;
     }
@@ -235,6 +328,10 @@ void loop()
         break;
 
     case State::ERROR:
+        break;
+
+    case State::SERVICE:
+        ArduinoOTA.handle();
         break;
     }
 
